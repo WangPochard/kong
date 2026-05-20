@@ -1,0 +1,20 @@
+# 環境設定（含密碼，不進 git）
+.env
+*.env
+!.env.example
+
+# Kong PostgreSQL volume（Docker 管理）
+kong-db-data/
+
+# deck 暫存
+*.bak
+
+# 編輯器
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
