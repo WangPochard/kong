@@ -2,6 +2,44 @@
 
 ## 常見問題
 
+### Kong Manager 顯示 "Plugins could not be retrieved"
+
+**現象**：進入 Kong Manager (`http://localhost:8002`) 後，Plugins 頁面顯示：
+> Plugins could not be retrieved. Data cannot be displayed due to an error.
+
+**原因**：Kong Manager UI 跑在瀏覽器裡，需要知道 Admin API 的位置。若 Admin API **不在預設的 8001 port**（例如本環境用 8765），而 `KONG_ADMIN_GUI_API_URL` 又沒設定，UI 就會打 `:8001` 打不到而報錯。
+
+**修復**：在 `docker-compose.yml` 加上：
+
+```yaml
+environment:
+  KONG_ADMIN_GUI_URL: http://${WSL_IP}:8002       # Kong Manager 自己的 URL
+  KONG_ADMIN_GUI_API_URL: http://${WSL_IP}:8765   # ← 這個必加！指向 Admin API
+```
+
+`WSL_IP` 定義在 `.env`：
+
+```env
+WSL_IP=172.27.207.106   # 執行 hostname -I | awk '{print $1}' 取得
+```
+
+然後重啟：
+
+```bash
+docker compose up -d --force-recreate kong
+```
+
+> **⚠️ WSL2 IP 注意事項：**
+> - 從 Windows 瀏覽器存取時，必須用 WSL2 IP（不能用 localhost）
+> - WSL2 IP **每次重開機都會變**，需更新 `.env` 的 `WSL_IP` 後重啟 Kong
+> - 更新流程：`hostname -I | awk '{print $1}'` → 改 `.env` → `docker compose up -d --force-recreate kong`
+
+> **兩個變數的差別：**
+> - `KONG_ADMIN_GUI_URL` → Kong Manager 本身的 URL（決定 CORS 允許的 Origin）
+> - `KONG_ADMIN_GUI_API_URL` → Kong Manager 要呼叫的 Admin API URL（讓瀏覽器知道 API 在哪）
+
+---
+
 ### Kong 啟動失敗
 
 **現象**：`docker compose up` 後 kong 容器一直 restarting

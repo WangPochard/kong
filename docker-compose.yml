@@ -52,7 +52,8 @@ services:
       KONG_ADMIN_ACCESS_LOG: /dev/stdout
       KONG_ADMIN_ERROR_LOG: /dev/stderr
       KONG_ADMIN_LISTEN: 0.0.0.0:8765
-      KONG_ADMIN_GUI_URL: http://localhost:8002
+      KONG_ADMIN_GUI_URL: http://${WSL_IP}:8002
+      KONG_ADMIN_GUI_API_URL: http://${WSL_IP}:8765
     ports:
       - "8000:8000"   # HTTP Proxy
       - "8443:8443"   # HTTPS Proxy
