@@ -10,19 +10,43 @@
 #   ./setup-sso-routes.sh --clean      # 清除所有 SSO 相關設定後重建
 #
 # 環境需求：
-#   - Kong Admin API 可用（預設 localhost:8765）
+#   - Kong Admin API 可用（預設 172.27.207.106:8765）
 #   - curl, jq 已安裝
 # =============================================================================
 
 set -euo pipefail
 
+# ─── 讀取 .env（優先順序：環境變數 > .env > 預設值）──────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/../.env}"   # ~/kong/.env
+
+_load_env() {
+  local key="$1"
+  grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'"'"
+}
+
+if [[ -f "$ENV_FILE" ]]; then
+  _KONG_ADMIN_HOST=$(_load_env "KONG_ADMIN_HOST")
+  _KONG_ADMIN_PORT=$(_load_env "KONG_ADMIN_PORT")
+  _SSO_HOST=$(_load_env "SSO_HOST")
+  _SSO_PORT=$(_load_env "SSO_PORT")
+  _CORS_ORIGINS=$(_load_env "CORS_ORIGINS")
+  _VALKEY_HOST=$(_load_env "VALKEY_HOST")
+  _VALKEY_PORT=$(_load_env "VALKEY_PORT")
+  _VALKEY_DB=$(_load_env "VALKEY_DB")
+  echo -e "\033[0;34m[INFO]\033[0m 讀取 .env：$ENV_FILE"
+else
+  echo -e "\033[1;33m[WARN]\033[0m 找不到 .env（$ENV_FILE），使用預設值"
+fi
+
 # ─── 設定區（可依環境修改）─────────────────────────────────────────────────
-KONG_ADMIN="${KONG_ADMIN:-http://localhost:8765}"
-SSO_UPSTREAM="${SSO_UPSTREAM:-http://sso-fhir:8000}"  # Kong 能連到的 SSO 內部 URL
-VALKEY_HOST="${VALKEY_HOST:-cap-valkey}"
-VALKEY_PORT="${VALKEY_PORT:-6379}"
-VALKEY_DB="${VALKEY_DB:-2}"             # Kong 用 DB 2，避開 SSO(1) 和 CAP(0)
-CORS_ORIGINS="${CORS_ORIGINS:-http://localhost:3000}"  # 逗號分隔多個 origin
+# 優先順序：環境變數 > .env 讀到的值 > hardcode 預設值
+KONG_ADMIN="${KONG_ADMIN:-http://${_KONG_ADMIN_HOST:-127.0.0.1}:${_KONG_ADMIN_PORT:-8765}}"
+SSO_UPSTREAM="${SSO_UPSTREAM:-http://${_SSO_HOST:-127.0.0.1}:${_SSO_PORT:-8001}}"
+VALKEY_HOST="${VALKEY_HOST:-${_VALKEY_HOST:-cap-valkey}}"
+VALKEY_PORT="${VALKEY_PORT:-${_VALKEY_PORT:-6379}}"
+VALKEY_DB="${VALKEY_DB:-${_VALKEY_DB:-2}}"
+CORS_ORIGINS="${CORS_ORIGINS:-${_CORS_ORIGINS:-http://127.0.0.1:3000}}"
 ADMIN_ALLOWED_IPS="${ADMIN_ALLOWED_IPS:-172.25.0.0/16,127.0.0.1}"
 
 # ─── 旗標 ──────────────────────────────────────────────────────────────────
@@ -149,7 +173,7 @@ JSON
 
 if echo "$SVC_RESULT" | jq -e '.id' >/dev/null 2>&1 || [[ "$DRY_RUN" == true ]]; then
   ok "Service 建立：sso-fhir → $SSO_UPSTREAM"
-elif echo "$SVC_RESULT" | grep -q "already exists"; then
+elif echo "$SVC_RESULT" | grep -qE "already exists|unique constraint violation"; then
   warn "Service 已存在，繼續（使用 --clean 可重建）"
 else
   error "建立 Service 失敗：$SVC_RESULT"
@@ -172,7 +196,7 @@ create_route() {
 
   if echo "$result" | jq -e '.id' >/dev/null 2>&1; then
     ok "Route: $name"
-  elif echo "$result" | grep -q "already exists"; then
+  elif echo "$result" | grep -qE "already exists|unique constraint violation"; then
     warn "Route 已存在（跳過）: $name"
   else
     error "Route 建立失敗 ($name): $result"
@@ -279,6 +303,18 @@ create_route "sso-health" "$(cat <<JSON
 JSON
 )"
 
+# Swagger UI（strip_path 必須 false，否則 /docs 會被剝成 /）
+# FastAPI 本身有 Basic Auth 保護，不需要額外 plugin
+create_route "sso-swagger-docs" "$(cat <<JSON
+{
+  "name": "sso-swagger-docs",
+  "paths": ["/docs", "/redoc", "/openapi.json"],
+  "methods": ["GET"],
+  "strip_path": false
+}
+JSON
+)"
+
 # ─── 取得 Route ID（後續掛 Plugin 用）────────────────────────────────────────
 get_route_id() {
   local name="$1"
@@ -304,7 +340,7 @@ add_plugin_to_route() {
 
   if echo "$result" | grep -q '"id"'; then
     ok "Plugin $plugin_name → $route_name"
-  elif echo "$result" | grep -q "already exists"; then
+  elif echo "$result" | grep -qE "already exists|unique constraint violation"; then
     warn "Plugin 已存在（跳過）: $plugin_name on $route_name"
   else
     error "Plugin 設定失敗 ($plugin_name on $route_name): $result"
@@ -325,7 +361,7 @@ add_global_plugin() {
 
   if echo "$result" | grep -q '"id"'; then
     ok "Global Plugin: $plugin_name"
-  elif echo "$result" | grep -q "already exists"; then
+  elif echo "$result" | grep -qE "already exists|unique constraint violation"; then
     warn "Global Plugin 已存在（跳過）: $plugin_name"
   else
     error "Global Plugin 設定失敗 ($plugin_name): $result"
@@ -448,10 +484,10 @@ section "快速測試指令"
 
 cat <<'TIPS'
 # 1. SSO Health（走 Kong）
-curl -s http://localhost:8000/api/sso/health | jq .status
+curl -s http://172.27.207.106:8001/api/sso/health | jq .status
 
 # 2. 登入取得 token
-TOKEN=$(curl -s -X POST http://localhost:8000/api/sso/auth/login \
+TOKEN=$(curl -s -X POST http://172.27.207.106:8001/api/sso/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username":"YOUR_USER","password":"YOUR_PASS"}' \
   | jq -r '.data[0].access_token // .data.access_token')
@@ -459,18 +495,26 @@ echo "Token: ${TOKEN:0:50}..."
 
 # 3. 測試 entry-code（不要跟 redirect）
 curl -v -X POST \
-  "http://localhost:8000/api/sso/systems/YOUR_SYSTEM_ID/entry-code" \
+  "http://172.27.207.106:8001/api/sso/systems/YOUR_SYSTEM_ID/entry-code" \
   -H "Authorization: Bearer $TOKEN" \
   2>&1 | grep -E "< HTTP|Location:"
 # 期望：302 + Location: http://subsystem.com?code=xxx
 
 # 4. 確認限流 header
-curl -I -X POST http://localhost:8000/api/sso/auth/login \
+curl -I -X POST http://172.27.207.106:8001/api/sso/auth/login \
   -H "Content-Type: application/json" \
   -d '{}' 2>/dev/null | grep -i "RateLimit"
 
 # 5. 查 Kong 路由狀態
-curl -s http://localhost:8765/routes | jq '.data[] | select(.name|startswith("sso-")) | {name,paths}'
+curl -s http://172.27.207.106:8765/routes | jq '.data[] | select(.name|startswith("sso-")) | {name,paths}'
+
+# 6. Swagger UI（需輸入 Basic Auth 帳密）
+#    瀏覽器打開：http://172.27.207.106:8000/docs
+#    或 curl 測試（帶帳密）：
+curl -s -o /dev/null -w "%{http_code}" \
+  -u "YOUR_SWAGGER_USER:YOUR_SWAGGER_PASS" \
+  http://172.27.207.106:8000/docs
+# 期望：200
 TIPS
 
 echo ""
