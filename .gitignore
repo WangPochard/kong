@@ -18,3 +18,4 @@ kong-db-data/
 # OS
 .DS_Store
 Thumbs.db
+test-env.sh
